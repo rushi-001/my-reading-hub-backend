@@ -23,6 +23,7 @@ export class Server {
     this.server = express();
     this.PORT = process.env.PORT || 8484;
     this.middlewares()
+    this.start()
     this.routes()
   }
 
@@ -66,9 +67,9 @@ export class Server {
         console.log("Connected to MongoDB");
 
         // Start the server
-        this.server.listen(this.PORT, () => {
-          console.log(`Server is running on http://localhost:${this.PORT}`);
-        });
+        // this.server.listen(this.PORT, () => {
+        //   console.log(`Server is running`);
+        // });
       })
       .catch((err) => {
         console.error("Failed to connect to MongoDB", err);
