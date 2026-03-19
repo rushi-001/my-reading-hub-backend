@@ -18,7 +18,6 @@ export class Server {
     this.server = express();
     this.PORT = process.env.PORT || 8484;
     this.middlewares()
-    this.start()
     this.routes()
   }
 
