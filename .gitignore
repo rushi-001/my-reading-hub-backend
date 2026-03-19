@@ -1,3 +1,6 @@
 .env
 node_modules
 storage/uploads
+
+# Local Netlify folder
+.netlify

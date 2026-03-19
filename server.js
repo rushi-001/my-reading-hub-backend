@@ -55,8 +55,7 @@ export class Server {
 
   async start() {
     // Connect to MongoDB
-    const mongoUri =
-      process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/my-reading-hub";
+    const mongoUri = process.env.MONGODB_URI
 
     console.log(
       "--------------------------------------------------------------------------"
@@ -66,7 +65,7 @@ export class Server {
       .then(() => {
         console.log("Connected to MongoDB");
 
-        // Start the server
+        // Start the server -> commented for Netlify deployment
         // this.server.listen(this.PORT, () => {
         //   console.log(`Server is running`);
         // });
