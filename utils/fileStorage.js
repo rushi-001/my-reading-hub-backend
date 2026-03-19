@@ -1,7 +1,19 @@
 import fs from "fs";
 import path from "path";
 
-export const UPLOADS_ROOT = path.resolve(process.cwd(), "storage", "uploads");
+const isServerlessRuntime = Boolean(
+  process.env.NETLIFY ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT
+);
+
+const defaultUploadsRoot = isServerlessRuntime
+  ? path.resolve("/tmp", "uploads")
+  : path.resolve(process.cwd(), "storage", "uploads");
+
+export const UPLOADS_ROOT = process.env.UPLOADS_ROOT
+  ? path.resolve(process.env.UPLOADS_ROOT)
+  : defaultUploadsRoot;
 
 const toPosixPath = (value) => value.replace(/\\/g, "/");
 
