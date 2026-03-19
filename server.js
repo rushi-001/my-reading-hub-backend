@@ -60,10 +60,10 @@ export class Server {
       .then(() => {
         console.log("Connected to MongoDB");
 
-        // Start the server -> commented for Netlify deployment
-        // this.server.listen(this.PORT, () => {
-        //   console.log(`Server is running`);
-        // });
+        // Start the server 
+        this.server.listen(this.PORT, () => {
+          console.log(`Server is running`);
+        });
       })
       .catch((err) => {
         console.error("Failed to connect to MongoDB", err);
