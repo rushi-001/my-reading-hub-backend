@@ -1,8 +1,11 @@
 import { randomUUID } from "crypto";
+import fs from "fs/promises";
+import path from "path";
 import ApiError from "../utils/apiError.js";
 import { bookRepository } from "../repositories/book.repository.js";
 import { hasOwn, isPlainObject } from "../utils/object.utils.js";
 import { toPublicResourceUrl, toStoredResourcePath } from "../utils/url.utils.js";
+import { UPLOADS_ROOT } from "../utils/fileStorage.js";
 import {
   toBoolean,
   toDateOrNull,
@@ -199,6 +202,137 @@ const buildPatchPayload = (patch) => {
   return update;
 };
 
+const toUploadRelativePathFromResourceUrl = (resourceUrl) => {
+  const storedPath = toStoredResourcePath(resourceUrl);
+  if (typeof storedPath !== "string") {
+    return null;
+  }
+
+  const trimmed = storedPath.trim();
+  if (!trimmed.startsWith("/uploads/")) {
+    return null;
+  }
+
+  const relativePath = trimmed
+    .slice("/uploads/".length)
+    .split("?")[0]
+    .split("#")[0];
+
+  return relativePath || null;
+};
+
+const resolveUploadAbsolutePath = (resourceUrl) => {
+  const uploadRelativePath = toUploadRelativePathFromResourceUrl(resourceUrl);
+  if (!uploadRelativePath) {
+    return null;
+  }
+
+  const rootPath = path.resolve(UPLOADS_ROOT);
+  const absolutePath = path.resolve(rootPath, uploadRelativePath);
+  const relativeToRoot = path.relative(rootPath, absolutePath);
+
+  if (
+    !relativeToRoot ||
+    relativeToRoot.startsWith("..") ||
+    path.isAbsolute(relativeToRoot)
+  ) {
+    return null;
+  }
+
+  return absolutePath;
+};
+
+const safeDeleteUploadFileByResourceUrl = async (resourceUrl) => {
+  const absolutePath = resolveUploadAbsolutePath(resourceUrl);
+  if (!absolutePath) {
+    return;
+  }
+
+  try {
+    await fs.unlink(absolutePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error(`Failed to delete uploaded file: ${absolutePath}`, error);
+    }
+  }
+};
+
+const removeResourceFiles = async (resourceUrls = []) => {
+  const uniqueUrls = Array.from(
+    new Set(
+      resourceUrls
+        .filter((url) => typeof url === "string")
+        .map((url) => url.trim())
+        .filter(Boolean)
+    )
+  );
+
+  await Promise.all(uniqueUrls.map((url) => safeDeleteUploadFileByResourceUrl(url)));
+};
+
+const getAttachmentUrls = (attachments) =>
+  Array.isArray(attachments)
+    ? attachments
+        .map((attachment) =>
+          typeof attachment?.url === "string" ? attachment.url.trim() : ""
+        )
+        .filter(Boolean)
+    : [];
+
+const collectBookResourceUrls = (book) => [
+  book?.cover,
+  book?.fileUrl,
+  book?.audioUrl,
+  ...getAttachmentUrls(book?.attachments),
+].filter((url) => typeof url === "string" && url.trim().length);
+
+const collectRemovedAttachmentUrlsFromPatch = (existingBook, updatePayload) => {
+  if (!hasOwn(updatePayload, "attachments")) {
+    return [];
+  }
+
+  const previousAttachments = Array.isArray(existingBook?.attachments)
+    ? existingBook.attachments
+    : [];
+  const nextAttachments = Array.isArray(updatePayload.attachments)
+    ? updatePayload.attachments
+    : [];
+
+  const nextIds = new Set(
+    nextAttachments
+      .map((attachment) =>
+        typeof attachment?.id === "string" ? attachment.id.trim() : ""
+      )
+      .filter(Boolean)
+  );
+
+  return previousAttachments
+    .filter((attachment) => {
+      const attachmentId =
+        typeof attachment?.id === "string" ? attachment.id.trim() : "";
+      return attachmentId && !nextIds.has(attachmentId);
+    })
+    .map((attachment) =>
+      typeof attachment?.url === "string" ? attachment.url.trim() : ""
+    )
+    .filter(Boolean);
+};
+
+const collectReplacedTopLevelResourceUrls = (existingBook, updatePayload) =>
+  ["cover", "fileUrl", "audioUrl"]
+    .filter((fieldName) => hasOwn(updatePayload, fieldName))
+    .map((fieldName) => {
+      const previousValue = toNullableText(existingBook?.[fieldName]);
+      const nextValue = toNullableText(updatePayload?.[fieldName]);
+
+      if (!previousValue || previousValue === nextValue) {
+        return null;
+      }
+
+      return previousValue;
+    })
+    .filter(Boolean);
+
 const toBookResponseAttachment = (attachment, baseUrl) => {
   if (!attachment || typeof attachment !== "object") {
     return attachment;
@@ -341,10 +475,22 @@ class BookService {
       throw new ApiError(400, "No valid fields provided to update", "BadRequest");
     }
 
+    const existingBook = await bookRepository.findById(id);
+    if (!existingBook) {
+      throw new ApiError(404, "Book not found", "NotFound");
+    }
+
+    const resourceUrlsToDelete = [
+      ...collectReplacedTopLevelResourceUrls(existingBook, updatePayload),
+      ...collectRemovedAttachmentUrlsFromPatch(existingBook, updatePayload),
+    ];
+
     const updatedBook = await bookRepository.updateById(id, updatePayload);
     if (!updatedBook) {
       throw new ApiError(404, "Book not found", "NotFound");
     }
+
+    await removeResourceFiles(resourceUrlsToDelete);
 
     return toBookResponse(updatedBook, baseUrl);
   }
@@ -384,11 +530,11 @@ class BookService {
       throw new ApiError(404, "Book not found", "NotFound");
     }
 
-    const hasAttachment = Array.isArray(existingBook.attachments)
-      ? existingBook.attachments.some((attachment) => attachment?.id === attachmentId)
-      : false;
+    const attachmentToDelete = Array.isArray(existingBook.attachments)
+      ? existingBook.attachments.find((attachment) => attachment?.id === attachmentId)
+      : null;
 
-    if (!hasAttachment) {
+    if (!attachmentToDelete) {
       throw new ApiError(404, "Attachment not found", "NotFound");
     }
 
@@ -399,6 +545,8 @@ class BookService {
     if (!updatedBook) {
       throw new ApiError(404, "Book not found", "NotFound");
     }
+
+    await removeResourceFiles([attachmentToDelete.url]);
 
     return toBookResponse(updatedBook, baseUrl);
   }
@@ -412,6 +560,8 @@ class BookService {
     if (!deletedBook) {
       throw new ApiError(404, "Book not found", "NotFound");
     }
+
+    await removeResourceFiles(collectBookResourceUrls(deletedBook));
 
     return deletedBook.id;
   }
