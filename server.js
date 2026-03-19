@@ -35,6 +35,13 @@ export class Server {
   // Routes
   routes() {
     this.server.get("/", (_, res) => res.send("API is running..."));
+    this.server.get("/health", (_req, res) => {
+      res.status(200).json({
+        status: "ok",
+        service: "my-reading-hub-backend",
+        timestamp: new Date().toISOString(),
+      });
+    });
 
     this.server.use("/api/books", new BookRoutes().router);
     this.server.use("/api/notes", new NoteRoutes().router);
