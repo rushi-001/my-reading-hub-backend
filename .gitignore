@@ -1,6 +1,5 @@
 .env
+.env.example
 node_modules
 storage/uploads
-
-# Local Netlify folder
-.netlify
+my-book-reader-storage-firebase-adminsdk-fbsvc-775f4bed4d.json

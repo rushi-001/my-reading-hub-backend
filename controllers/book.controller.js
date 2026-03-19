@@ -2,9 +2,12 @@ import { bookService } from "../services/book.service.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import ApiError from "../utils/apiError.js";
 import { randomUUID } from "crypto";
-import { buildPublicFileUrl } from "../utils/fileStorage.js";
 import { getRequestBaseUrl } from "../utils/url.utils.js";
 import { isPlainObject } from "../utils/object.utils.js";
+import {
+  deleteStoredResources,
+  storeUploadedFile,
+} from "../utils/resourceStorage.js";
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
@@ -58,18 +61,13 @@ const unwrapMultipartPayload = (body, payloadField) => {
   return { ...remainingBody, ...rawPayload };
 };
 
-const buildUploadedFileUrl = (file) => {
-  const category = file.storageCategory || "book-file";
-  return buildPublicFileUrl(`${category}/${file.filename}`);
-};
-
-const toAttachmentFromFile = (file) => ({
+const toAttachmentFromStoredFile = (file, storedFile) => ({
   id: randomUUID(),
   name: file.originalname || file.filename || "attachment",
   mimeType: file.mimetype || "application/octet-stream",
   size: Number(file.size || 0),
-  fileId: null,
-  url: buildUploadedFileUrl(file),
+  fileId: storedFile.storagePath,
+  url: storedFile.url,
   dataUrl: "",
   createdAt: new Date(),
 });
@@ -83,7 +81,21 @@ const getFirstUploadedFile = (filesMap, fieldNames) => {
   return null;
 };
 
-const mergeBodyAndUploadedFiles = (body, filesMap, payloadField) => {
+const rollbackUploadedResources = async (uploadedResources = []) => {
+  try {
+    await deleteStoredResources(uploadedResources);
+  } catch (error) {
+    console.error("Failed to roll back uploaded resources", error);
+  }
+};
+
+const uploadAndTrackFile = async (file, uploadedResources) => {
+  const storedFile = await storeUploadedFile(file);
+  uploadedResources.push(storedFile);
+  return storedFile;
+};
+
+const mergeBodyAndUploadedFiles = async (body, filesMap, payloadField) => {
   const payload = normalizeMultipartBookBody(
     unwrapMultipartPayload(body, payloadField)
   );
@@ -98,28 +110,49 @@ const mergeBodyAndUploadedFiles = (body, filesMap, payloadField) => {
   ]);
   const audioFile = getFirstUploadedFile(filesMap, ["audio"]);
   const attachmentFiles = asArray(filesMap?.attachments);
+  const uploadedResources = [];
 
-  if (coverFile) {
-    payload.cover = buildUploadedFileUrl(coverFile);
+  try {
+    if (coverFile) {
+      const storedCover = await uploadAndTrackFile(coverFile, uploadedResources);
+      payload.cover = storedCover.url;
+      payload.coverStoragePath = storedCover.storagePath;
+    }
+
+    if (mainBookFile) {
+      const storedBookFile = await uploadAndTrackFile(
+        mainBookFile,
+        uploadedResources
+      );
+      payload.fileUrl = storedBookFile.url;
+      payload.fileStoragePath = storedBookFile.storagePath;
+    }
+
+    if (audioFile) {
+      const storedAudioFile = await uploadAndTrackFile(audioFile, uploadedResources);
+      payload.audioUrl = storedAudioFile.url;
+      payload.audioStoragePath = storedAudioFile.storagePath;
+    }
+
+    if (attachmentFiles.length) {
+      const existingAttachments = asArray(payload.attachments);
+      const uploadedAttachments = [];
+
+      for (const file of attachmentFiles) {
+        const storedAttachment = await uploadAndTrackFile(file, uploadedResources);
+        uploadedAttachments.push(
+          toAttachmentFromStoredFile(file, storedAttachment)
+        );
+      }
+
+      payload.attachments = [...existingAttachments, ...uploadedAttachments];
+    }
+
+    return { payload, uploadedResources };
+  } catch (error) {
+    await rollbackUploadedResources(uploadedResources);
+    throw error;
   }
-
-  if (mainBookFile) {
-    payload.fileUrl = buildUploadedFileUrl(mainBookFile);
-  }
-
-  if (audioFile) {
-    payload.audioUrl = buildUploadedFileUrl(audioFile);
-  }
-
-  if (attachmentFiles.length) {
-    const existingAttachments = asArray(payload.attachments);
-    payload.attachments = [
-      ...existingAttachments,
-      ...attachmentFiles.map((file) => toAttachmentFromFile(file)),
-    ];
-  }
-
-  return payload;
 };
 
 class BookController {
@@ -143,20 +176,40 @@ class BookController {
 
   createBook = asyncHandler(async (req, res) => {
     const baseUrl = getRequestBaseUrl(req);
-    const payload = mergeBodyAndUploadedFiles(req.body, req.files, "book");
-    const book = await bookService.createBook(payload, baseUrl);
-    res.status(201).json({ book });
+    const { payload, uploadedResources } = await mergeBodyAndUploadedFiles(
+      req.body,
+      req.files,
+      "book"
+    );
+
+    try {
+      const book = await bookService.createBook(payload, baseUrl);
+      res.status(201).json({ book });
+    } catch (error) {
+      await rollbackUploadedResources(uploadedResources);
+      throw error;
+    }
   });
 
   updateBook = asyncHandler(async (req, res) => {
     const baseUrl = getRequestBaseUrl(req);
-    const payload = mergeBodyAndUploadedFiles(req.body, req.files, "patch");
-    const book = await bookService.updateBook(
-      req.params.id,
-      payload,
-      baseUrl
+    const { payload, uploadedResources } = await mergeBodyAndUploadedFiles(
+      req.body,
+      req.files,
+      "patch"
     );
-    res.status(200).json({ book });
+
+    try {
+      const book = await bookService.updateBook(
+        req.params.id,
+        payload,
+        baseUrl
+      );
+      res.status(200).json({ book });
+    } catch (error) {
+      await rollbackUploadedResources(uploadedResources);
+      throw error;
+    }
   });
 
   uploadBookAttachment = asyncHandler(async (req, res) => {
@@ -170,13 +223,20 @@ class BookController {
     }
 
     const baseUrl = getRequestBaseUrl(req);
-    const attachment = toAttachmentFromFile(file);
-    const book = await bookService.addBookAttachment(
-      req.params.bookId,
-      attachment,
-      baseUrl
-    );
-    res.status(200).json({ book });
+    const storedFile = await storeUploadedFile(file);
+    const attachment = toAttachmentFromStoredFile(file, storedFile);
+
+    try {
+      const book = await bookService.addBookAttachment(
+        req.params.bookId,
+        attachment,
+        baseUrl
+      );
+      res.status(200).json({ book });
+    } catch (error) {
+      await rollbackUploadedResources([storedFile]);
+      throw error;
+    }
   });
 
   deleteBookAttachment = asyncHandler(async (req, res) => {
