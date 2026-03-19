@@ -40,12 +40,9 @@ const bookSchema = new mongoose.Schema(
     author: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
     cover: { type: String, default: null },
-    coverStoragePath: { type: String, default: null },
     format: { type: String, default: "text", trim: true },
     fileUrl: { type: String, default: null },
-    fileStoragePath: { type: String, default: null },
     audioUrl: { type: String, default: null },
-    audioStoragePath: { type: String, default: null },
     rating: { type: Number, default: 0, min: 0, max: 5 },
     progress: { type: Number, default: 0, min: 0, max: 100 },
     currentPage: { type: Number, default: 0, min: 0 },
@@ -67,9 +64,6 @@ const bookSchema = new mongoose.Schema(
 bookSchema.set("toJSON", {
   transform: (_, result) => {
     delete result._id;
-    delete result.coverStoragePath;
-    delete result.fileStoragePath;
-    delete result.audioStoragePath;
     return result;
   },
 });

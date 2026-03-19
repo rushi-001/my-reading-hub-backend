@@ -1,9 +1,11 @@
 import { randomUUID } from "crypto";
+import fs from "fs/promises";
+import path from "path";
 import ApiError from "../utils/apiError.js";
 import { bookRepository } from "../repositories/book.repository.js";
 import { hasOwn, isPlainObject } from "../utils/object.utils.js";
-import { deleteStoredResources } from "../utils/resourceStorage.js";
 import { toPublicResourceUrl, toStoredResourcePath } from "../utils/url.utils.js";
+import { UPLOADS_ROOT } from "../utils/fileStorage.js";
 import {
   toBoolean,
   toDateOrNull,
@@ -139,12 +141,9 @@ const buildCreatePayload = (payload) => ({
   author: toText(payload.author, ""),
   description: toText(payload.description, ""),
   cover: toNullableText(toStoredResourcePath(payload.cover)),
-  coverStoragePath: toNullableText(payload.coverStoragePath),
   format: toText(payload.format, "text"),
   fileUrl: toNullableText(toStoredResourcePath(payload.fileUrl)),
-  fileStoragePath: toNullableText(payload.fileStoragePath),
   audioUrl: toNullableText(toStoredResourcePath(payload.audioUrl)),
-  audioStoragePath: toNullableText(payload.audioStoragePath),
   rating: toNumber(payload.rating, { fallback: 0, min: 0, max: 5 }),
   progress: toNumber(payload.progress, { fallback: 0, min: 0, max: 100 }),
   currentPage: toNumber(payload.currentPage, { fallback: 0, min: 0 }),
@@ -165,18 +164,15 @@ const buildPatchPayload = (patch) => {
   if (hasOwn(patch, "author")) update.author = toText(patch.author, "");
   if (hasOwn(patch, "description"))
     update.description = toText(patch.description, "");
-  if (hasOwn(patch, "cover") || hasOwn(patch, "coverStoragePath")) {
+  if (hasOwn(patch, "cover")) {
     update.cover = toNullableText(toStoredResourcePath(patch.cover));
-    update.coverStoragePath = toNullableText(patch.coverStoragePath);
   }
   if (hasOwn(patch, "format")) update.format = toText(patch.format, "text");
-  if (hasOwn(patch, "fileUrl") || hasOwn(patch, "fileStoragePath")) {
+  if (hasOwn(patch, "fileUrl")) {
     update.fileUrl = toNullableText(toStoredResourcePath(patch.fileUrl));
-    update.fileStoragePath = toNullableText(patch.fileStoragePath);
   }
-  if (hasOwn(patch, "audioUrl") || hasOwn(patch, "audioStoragePath")) {
+  if (hasOwn(patch, "audioUrl")) {
     update.audioUrl = toNullableText(toStoredResourcePath(patch.audioUrl));
-    update.audioStoragePath = toNullableText(patch.audioStoragePath);
   }
   if (hasOwn(patch, "rating"))
     update.rating = toNumber(patch.rating, { fallback: 0, min: 0, max: 5 });
@@ -206,40 +202,91 @@ const buildPatchPayload = (patch) => {
   return update;
 };
 
-const toResourceDescriptor = (url, storagePath = null) => {
-  const normalizedUrl = toNullableText(url);
-  const normalizedStoragePath = toNullableText(storagePath);
-
-  if (!normalizedUrl && !normalizedStoragePath) {
+const toUploadRelativePathFromResourceUrl = (resourceUrl) => {
+  const storedPath = toStoredResourcePath(resourceUrl);
+  if (typeof storedPath !== "string") {
     return null;
   }
 
-  return {
-    url: normalizedUrl,
-    storagePath: normalizedStoragePath,
-  };
+  const trimmed = storedPath.trim();
+  if (!trimmed.startsWith("/uploads/")) {
+    return null;
+  }
+
+  const relativePath = trimmed
+    .slice("/uploads/".length)
+    .split("?")[0]
+    .split("#")[0];
+
+  return relativePath || null;
 };
 
-const removeResourceFiles = async (resources = []) => {
-  await deleteStoredResources(resources);
+const resolveUploadAbsolutePath = (resourceUrl) => {
+  const uploadRelativePath = toUploadRelativePathFromResourceUrl(resourceUrl);
+  if (!uploadRelativePath) {
+    return null;
+  }
+
+  const rootPath = path.resolve(UPLOADS_ROOT);
+  const absolutePath = path.resolve(rootPath, uploadRelativePath);
+  const relativeToRoot = path.relative(rootPath, absolutePath);
+
+  if (
+    !relativeToRoot ||
+    relativeToRoot.startsWith("..") ||
+    path.isAbsolute(relativeToRoot)
+  ) {
+    return null;
+  }
+
+  return absolutePath;
 };
 
-const getAttachmentResources = (attachments) =>
+const safeDeleteUploadFileByResourceUrl = async (resourceUrl) => {
+  const absolutePath = resolveUploadAbsolutePath(resourceUrl);
+  if (!absolutePath) {
+    return;
+  }
+
+  try {
+    await fs.unlink(absolutePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error(`Failed to delete uploaded file: ${absolutePath}`, error);
+    }
+  }
+};
+
+const removeResourceFiles = async (resourceUrls = []) => {
+  const uniqueUrls = Array.from(
+    new Set(
+      resourceUrls
+        .filter((url) => typeof url === "string")
+        .map((url) => url.trim())
+        .filter(Boolean)
+    )
+  );
+
+  await Promise.all(uniqueUrls.map((url) => safeDeleteUploadFileByResourceUrl(url)));
+};
+
+const getAttachmentUrls = (attachments) =>
   Array.isArray(attachments)
     ? attachments
-        .map((attachment) => toResourceDescriptor(attachment?.url, attachment?.fileId))
+        .map((attachment) =>
+          typeof attachment?.url === "string" ? attachment.url.trim() : ""
+        )
         .filter(Boolean)
     : [];
 
-const collectBookResources = (book) =>
-  [
-    toResourceDescriptor(book?.cover, book?.coverStoragePath),
-    toResourceDescriptor(book?.fileUrl, book?.fileStoragePath),
-    toResourceDescriptor(book?.audioUrl, book?.audioStoragePath),
-    ...getAttachmentResources(book?.attachments),
-  ].filter(Boolean);
+const collectBookResourceUrls = (book) => [
+  book?.cover,
+  book?.fileUrl,
+  book?.audioUrl,
+  ...getAttachmentUrls(book?.attachments),
+].filter((url) => typeof url === "string" && url.trim().length);
 
-const collectRemovedAttachmentResourcesFromPatch = (existingBook, updatePayload) => {
+const collectRemovedAttachmentUrlsFromPatch = (existingBook, updatePayload) => {
   if (!hasOwn(updatePayload, "attachments")) {
     return [];
   }
@@ -265,34 +312,24 @@ const collectRemovedAttachmentResourcesFromPatch = (existingBook, updatePayload)
         typeof attachment?.id === "string" ? attachment.id.trim() : "";
       return attachmentId && !nextIds.has(attachmentId);
     })
-    .map((attachment) => toResourceDescriptor(attachment?.url, attachment?.fileId))
+    .map((attachment) =>
+      typeof attachment?.url === "string" ? attachment.url.trim() : ""
+    )
     .filter(Boolean);
 };
 
-const collectReplacedTopLevelResources = (existingBook, updatePayload) =>
-  [
-    ["cover", "coverStoragePath"],
-    ["fileUrl", "fileStoragePath"],
-    ["audioUrl", "audioStoragePath"],
-  ]
-    .filter(
-      ([fieldName, storageFieldName]) =>
-        hasOwn(updatePayload, fieldName) || hasOwn(updatePayload, storageFieldName)
-    )
-    .map(([fieldName, storageFieldName]) => {
+const collectReplacedTopLevelResourceUrls = (existingBook, updatePayload) =>
+  ["cover", "fileUrl", "audioUrl"]
+    .filter((fieldName) => hasOwn(updatePayload, fieldName))
+    .map((fieldName) => {
       const previousValue = toNullableText(existingBook?.[fieldName]);
-      const previousStoragePath = toNullableText(existingBook?.[storageFieldName]);
       const nextValue = toNullableText(updatePayload?.[fieldName]);
-      const nextStoragePath = toNullableText(updatePayload?.[storageFieldName]);
 
-      if (
-        (!previousValue && !previousStoragePath) ||
-        (previousValue === nextValue && previousStoragePath === nextStoragePath)
-      ) {
+      if (!previousValue || previousValue === nextValue) {
         return null;
       }
 
-      return toResourceDescriptor(previousValue, previousStoragePath);
+      return previousValue;
     })
     .filter(Boolean);
 
@@ -443,9 +480,9 @@ class BookService {
       throw new ApiError(404, "Book not found", "NotFound");
     }
 
-    const resourcesToDelete = [
-      ...collectReplacedTopLevelResources(existingBook, updatePayload),
-      ...collectRemovedAttachmentResourcesFromPatch(existingBook, updatePayload),
+    const resourceUrlsToDelete = [
+      ...collectReplacedTopLevelResourceUrls(existingBook, updatePayload),
+      ...collectRemovedAttachmentUrlsFromPatch(existingBook, updatePayload),
     ];
 
     const updatedBook = await bookRepository.updateById(id, updatePayload);
@@ -453,7 +490,7 @@ class BookService {
       throw new ApiError(404, "Book not found", "NotFound");
     }
 
-    await removeResourceFiles(resourcesToDelete);
+    await removeResourceFiles(resourceUrlsToDelete);
 
     return toBookResponse(updatedBook, baseUrl);
   }
@@ -494,9 +531,7 @@ class BookService {
     }
 
     const attachmentToDelete = Array.isArray(existingBook.attachments)
-      ? existingBook.attachments.find(
-          (attachment) => attachment?.id === attachmentId
-        )
+      ? existingBook.attachments.find((attachment) => attachment?.id === attachmentId)
       : null;
 
     if (!attachmentToDelete) {
@@ -511,9 +546,7 @@ class BookService {
       throw new ApiError(404, "Book not found", "NotFound");
     }
 
-    await removeResourceFiles([
-      toResourceDescriptor(attachmentToDelete.url, attachmentToDelete.fileId),
-    ]);
+    await removeResourceFiles([attachmentToDelete.url]);
 
     return toBookResponse(updatedBook, baseUrl);
   }
@@ -528,7 +561,7 @@ class BookService {
       throw new ApiError(404, "Book not found", "NotFound");
     }
 
-    await removeResourceFiles(collectBookResources(deletedBook));
+    await removeResourceFiles(collectBookResourceUrls(deletedBook));
 
     return deletedBook.id;
   }
