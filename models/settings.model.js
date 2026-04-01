@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { DEFAULT_PDF_THEME, PDF_THEME_VALUES } from "../utils/settings.utils.js";
 
 export const APP_SETTINGS_KEY = "app-settings";
 
@@ -23,6 +24,12 @@ const settingsSchema = new mongoose.Schema(
     sidebarVisible: { type: Boolean, default: true },
     collapsibleSidebar: { type: Boolean, default: false },
     showCalendarHeatmap: { type: Boolean, default: true },
+    pdfTheme: {
+      type: String,
+      default: DEFAULT_PDF_THEME,
+      enum: PDF_THEME_VALUES,
+      trim: true,
+    },
   },
   {
     versionKey: false,

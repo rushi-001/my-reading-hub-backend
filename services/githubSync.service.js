@@ -7,6 +7,7 @@ import { NoteModel } from "../models/note.model.js";
 import { SettingsModel } from "../models/settings.model.js";
 import { isPlainObject } from "../utils/object.utils.js";
 import { ensureUploadsDirectory, UPLOADS_ROOT } from "../utils/fileStorage.js";
+import { buildSettingsPayload } from "../utils/settings.utils.js";
 
 const DEFAULT_GITHUB_DATA_REPO_OWNER = "rushi-001";
 const DEFAULT_GITHUB_DATA_REPO_NAME = "my_book_hub_data";
@@ -293,7 +294,7 @@ const replaceLocalSnapshotData = async ({ books, notes, settings }) => {
   }
 
   if (isPlainObject(settings)) {
-    await SettingsModel.create(settings);
+    await SettingsModel.create(buildSettingsPayload(settings));
   }
 };
 
