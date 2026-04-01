@@ -21,12 +21,13 @@ const settingsSchema = new mongoose.Schema(
     stackMaxVisible: { type: Number, default: 3, min: 0, max: 20 },
     autoScrollSpeed: { type: Number, default: 0, min: 0, max: 100 },
     sidebarVisible: { type: Boolean, default: true },
+    collapsibleSidebar: { type: Boolean, default: false },
     showCalendarHeatmap: { type: Boolean, default: true },
   },
   {
     versionKey: false,
     timestamps: false,
-  }
+  },
 );
 
 settingsSchema.set("toJSON", {

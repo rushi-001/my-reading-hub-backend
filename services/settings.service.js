@@ -39,6 +39,7 @@ const buildSettingsPayload = (payload) => ({
     max: 100,
   }),
   sidebarVisible: toBoolean(payload.sidebarVisible, true),
+  collapsibleSidebar: toBoolean(payload.collapsibleSidebar, false),
   showCalendarHeatmap: toBoolean(payload.showCalendarHeatmap, true),
 });
 
@@ -46,6 +47,12 @@ class SettingsService {
   async fetchSettings() {
     const existingSettings = await settingsRepository.findAppSettings();
     if (existingSettings) {
+      if (typeof existingSettings.collapsibleSidebar !== "boolean") {
+        return settingsRepository.upsertAppSettings({
+          collapsibleSidebar: false,
+        });
+      }
+
       return existingSettings;
     }
 

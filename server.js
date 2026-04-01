@@ -4,6 +4,9 @@ import mongoose from "mongoose";
 import { BookRoutes } from "./routes/book.routes.js";
 import { NoteRoutes } from "./routes/note.routes.js";
 import { SettingsRoutes } from "./routes/settings.routes.js";
+import { AdminAuthRoutes } from "./routes/adminAuth.routes.js";
+import { GithubSyncRoutes } from "./routes/githubSync.routes.js";
+import { attachRequestCookies } from "./middlewares/cookie.middleware.js";
 import { errorHandler, notFoundHandler } from "./middlewares/error.middleware.js";
 import { ensureUploadsDirectory, UPLOADS_ROOT } from "./utils/fileStorage.js";
 
@@ -21,7 +24,13 @@ export class Server {
   // Middlewares
   middlewares() {
     ensureUploadsDirectory();
-    this.server.use(cors({ origin: process.env.CLIENT_URL || "*" }));
+    this.server.use(
+      cors({
+        origin: process.env.CLIENT_URL?.trim() || true,
+        credentials: true,
+      })
+    );
+    this.server.use(attachRequestCookies);
     this.server.use(express.json({ limit: JSON_BODY_LIMIT }));
     this.server.use(
       express.urlencoded({
@@ -46,6 +55,8 @@ export class Server {
     this.server.use("/api/books", new BookRoutes().router);
     this.server.use("/api/notes", new NoteRoutes().router);
     this.server.use("/api/settings", new SettingsRoutes().router);
+    this.server.use("/api/admin-auth", new AdminAuthRoutes().router);
+    this.server.use("/api/github-sync", new GithubSyncRoutes().router);
 
     this.server.use(notFoundHandler);
     this.server.use(errorHandler);
